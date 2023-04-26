@@ -1,0 +1,17 @@
+# Ignore all files
+*
+
+# Allow avmod files in the base directory
+!/*.avmod
+# Except the package file
+/.avmod
+
+# Allow gitignore in the base directory
+!/.gitignore
+
+# Allow readme and gif in the base directory
+!/README.md
+!/*.gif
+
+# Allow Axiom Verge Mod Packager in the base directory
+!/AVModPackager.ps1
