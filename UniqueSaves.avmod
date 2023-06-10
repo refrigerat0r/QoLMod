@@ -5,9 +5,9 @@
     <Description>Changes the save directory to a relative path.</Description>
     <Message>Release</Message>
     <Game>AV1</Game>
-    <Platform>Steam</Platform>
-    <Modversion>1.0.1</Modversion>
-    <Gameversion>1.58.0</Gameversion>
+    <Platform>Steam-Beta</Platform>
+    <Modversion>1.0.1.1</Modversion>
+    <Gameversion>1.65.6.72</Gameversion>
     <Dependencies>
       <Dependency>Init</Dependency>
     </Dependencies>

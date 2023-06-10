@@ -10,6 +10,10 @@ using namespace System.Drawing
 ## PARAMETERS
 param($repositoryForkUrl = $null)
 
+## Assemblies
+Add-Type -AssemblyName "System.Windows.Forms"
+Add-Type -AssemblyName "System.Drawing"
+
 ## CONSTANTS
 $RemoteModRepository = "https://github.com/MaragonMH/AxiomVergeMods.git"
 $HighlightColor = "239,118,118"
@@ -23,11 +27,13 @@ $HeaderFont = [Font]::new($Font, 12, [FontStyle]::Bold)
 $SubHeaderFont = [Font]::new($Font, 10, [FontStyle]::Bold)
 $SubSubHeaderFont = [Font]::new($Font, 9, [FontStyle]::Bold)
 
-# UI-Elements
+## UI-Elements
+$Window = $null
 $Workspace = $null
 $Sidebar = $null
 $GamesContainer = $null
 $PackagesContainer = $null
+$PackagesHeader = $null
 $SidebarMarker = $null
 $Footer = $null
 $FooterInput = $null
@@ -41,11 +47,17 @@ class GameData {
     [String] $GameIdentifier
     [String] $GamePath
     [String] $Gameversion
+    [Boolean] $IsBeta = $false
 
-    GameData($gameIdentifier, $gamePath, $gameVersion){
+    GameData($gameIdentifier, $gamePath){
         $this.GameIdentifier = $gameIdentifier
         $this.GamePath = $gamePath
-        $this.Gameversion = $gameVersion
+        $versionInfo = (Get-ChildItem "$gamePath/*.exe" | Where-Object {
+            $_.Name -match "^AxiomVerge.?\.exe$" }).VersionInfo
+        $this.Gameversion = $versionInfo.ProductVersion
+        # TODO: Remove the special condition for AV1 once the changes have been made
+        $isAV1SteamBeta = $gameIdentifier -eq "AV1-Steam" -and ([version]$this.Gameversion).Revision -gt 0
+        $this.IsBeta = $versionInfo.PreRelease -or $isAV1SteamBeta
     }
 }
 class ModData {
@@ -99,8 +111,9 @@ function initializeRepository($repositoryName, $gamePath, $gameIdentifier, $fork
     # Be careful this enters the directory automatically
     $developmentDirectory = "Dev"
     $gamePath = $gamePath
-    $gameName = (Get-Item "$gamePath/AxiomVerge?.exe").Name
-    $gameBaseName = (Get-Item "$gamePath/AxiomVerge?.exe").BaseName
+    $gameExe = Get-Item "$gamePath/AxiomVerge*.exe" | Where-Object { $_.Name -match "^AxiomVerge.?\.exe$" }
+    $gameName = $gameExe.Name
+    $gameBaseName = $gameExe.BaseName
     if(Test-Path $repositoryName){ Remove-Item $repositoryName -Recurse -Force }
     New-Item $repositoryName -ItemType Directory
     Set-Location $repositoryName
@@ -117,8 +130,9 @@ function initializeRepository($repositoryName, $gamePath, $gameIdentifier, $fork
     Get-ChildItem $gamePath | ForEach-Object { Copy-Item $_.FullName . -Recurse }
     
     # Import Saves
-    New-Item "Saves" -ItemType Directory
-    # TODO
+    if(Test-Path "../Saves") { Move-Item "../Saves" "Saves" }
+    else { New-Item "Saves" -ItemType Directory }
+    
 
     # Decompile executable
     New-Item "$developmentDirectory" -ItemType Directory 
@@ -233,19 +247,21 @@ function buildPackage($gameIdentifier){
 function packageMod(){
     # Block specific package names
     $packageName = $FooterInput.Text -replace "[$([RegEx]::Escape([string][IO.Path]::GetInvalidFileNameChars()))]+","_"
-    if(($packageName -in @("AxiomVergeMods", "", "Mod")) -or ($packageName.StartsWith("AV"))){ 
-        displayInfoBox "Invalid package name. Check that it is not Empty and does not start with AV or match AxiomVergeMods and Mod."
+    if($SidebarMarker.Page.Parent -eq $PackagesContainer) { $packageName = $SidebarMarker.Page.Text }
+    if(($packageName -in @("AxiomVergeMods", "", "Saves", "Mod")) -or ($packageName.StartsWith("AV"))){ 
+        displayInfoBox "Invalid package name. Check that it is not Empty and does not start with AV or match AxiomVergeMods, Saves, Mod."
         return
     }
     # Check for duplicates
     if(Test-Path $packageName){
         $result = displayInfoBox "This package already exists. Do you want to overwrite it" $true
         if($result -ne [DialogResult]::Yes) { return }
-        Remove-Item $packageName -Recurse
+        Move-Item "$packageName/Saves" "Saves"
+        Remove-Item $packageName -Recurse -Force
     }
     initializeRepository $packageName $SidebarMarker.Page.GameData.GamePath $SidebarMarker.Page.GameData.GameIdentifier
     # Make sure to only discard old mods. This only happens for packages and their automatic updates
-    $mods = $Workspace.Controls.Where({$_.Visible -eq $true -and $_.CheckBox.Checked -eq $true}) | Select-Object -ExpandProperty ModData
+    $mods = $Workspace.Controls.Where{$_.Visible -eq $true -and $_.CheckBox.Checked -eq $true} | Select-Object -ExpandProperty ModData
     $mods = $mods | Group-Object Modname | ForEach-Object { 
         $maxVersion = ($_.group.Modversion | Measure-Object -Maximum).Maximum
         $recentMod = $_.group | Where-Object { $_.Modversion -eq $maxVersion }
@@ -269,6 +285,9 @@ function packageMod(){
     }
     buildPackage $SidebarMarker.Page.GameIdentifier
     Set-Location "../"
+
+    # Refresh Window
+    refreshUI
 }
 
 ## PRELOAD FUNCTIONS
@@ -300,9 +319,9 @@ function installDependencies(){
         "Microsoft.DotNet.DesktopRuntime.3_1"
     ) 
     $dependencies | Foreach-Object {
-        winget install $_ --no-upgrade
-    }
-
+        Start-Job -Arg $_ -ScriptBlock {param($dep) winget list $dep --no-upgrade }
+    } | Wait-Job | Out-Null
+    
     # Reload Path
     $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
 
@@ -321,9 +340,9 @@ function installDependencies(){
 
     # Download or update all available Mods
     if (Test-Path "AxiomVergeMods") {
-        git -C "AxiomVergeMods" status -s
+        git -C "AxiomVergeMods" status -s | Out-Null
         if($LASTEXITCODE -eq 0){
-            git -C "AxiomVergeMods" pull 
+            git -C "AxiomVergeMods" pull | Out-Null
         }
     } else {
         git clone $RemoteModRepository "AxiomVergeMods"
@@ -338,8 +357,27 @@ function loadGames(){
         "AV2-Epic" = "C:/Program Files/Epic Games/AxiomVerge2"
     }
     foreach ($supportedGame in $supportedGames.Keys.Where{ Test-Path $supportedGames[$_]}) {
-        $gameData = [GameData]::new($supportedGame, $supportedGames[$supportedGame], (Get-Item "$($supportedGames[$supportedGame])/AxiomVerge?.exe").VersionInfo.ProductVersion )
-        createPageButton $supportedGame $gameData $true
+        $gameData = [GameData]::new($supportedGame, $supportedGames[$supportedGame])
+        $storagePath = "$PSScriptRoot/AV-Sources/$supportedGame"
+        
+        # Store currently available Version (Beta/Original) for use when the other is selected
+        if($gameData.IsBeta) { $alternateGamePath = "$storagePath-Beta" }
+        else { $alternateGamePath = "$storagePath-Original" }
+        if(Test-Path $alternateGamePath){
+            if($gameData.Gameversion -gt [GameData]::new("", $alternateGamePath).Gameversion) { 
+                Remove-Item $alternateGamePath -Recurse -Force }}
+        if(!(Test-Path $alternateGamePath)){
+            Copy-Item $gameData.GamePath $alternateGamePath -Recurse }
+
+        # Create Games
+        $orgGamePath = "$storagePath-Original"
+        if(Test-Path $orgGamePath){
+            $gameData = [GameData]::new($supportedGame, $orgGamePath)
+            createPageButton $gameData.GameIdentifier $gameData $true }
+        $betaGamePath = "$storagePath-Beta"
+        if(Test-Path $betaGamePath){
+            $gameData = [GameData]::new("$supportedGame-Beta", $betaGamePath)
+            createPageButton $gameData.GameIdentifier $gameData $true }
     }
 }
 function loadAvailableMods(){
@@ -366,7 +404,9 @@ function loadInstalledPackages(){
         # Create page
         $packageName = $_.Name
         $gameIdentifier = "$($firstMod.Game)-$($firstMod.Platform)"
-        $gameData = ($GamesContainer.Controls.Where{$_.GameData.GameIdentifier -eq $gameIdentifier }).GameData
+        $gameHeader = $GamesContainer.Controls.Where{$_.GameData.GameIdentifier -eq $gameIdentifier }
+        if($gameHeader) { $gameData = $gameHeader.GameData }
+        else { $gameData = $null}
         createPageButton $packageName $gameData $false
 
         # Add installed mods
@@ -380,13 +420,23 @@ function loadInstalledPackages(){
         }
     }
 }
+function unloadInstalledPackages(){
+    foreach($mod in $Workspace.Controls.Where{$_.ModData.Package}){
+        $Workspace.Controls.Remove($mod)
+        $mod.Dispose()
+    }
+    foreach($packageElement in $PackagesContainer.Controls.Where{$_ -is [Button]}){
+        $PackagesContainer.Controls.Remove($packageElement)
+        $packageElement.Dispose()
+    }
+}
 
 ## UI FUNCTIONS
 function adjustMods(){
     # Ensure that the mod configuration is valid and reset if not
 
     function resetMods(){
-        foreach($mod in $Workspace.Controls.Where({ !$_.ModData.Installed })){
+        foreach($mod in $Workspace.Controls.Where{ !$_.ModData.Installed }){
             $mod.CheckBox.Checked = $false
         }
     }
@@ -397,7 +447,7 @@ function adjustMods(){
         [version]$minGameversion = "1.0.0.0"
         $conflicts = New-Object HashSet[String]
         # Fetch all dependencies and conflicts in the current mod selection
-        foreach($mod in $Workspace.Controls.Where({$_.Visible -eq $true -and $_.CheckBox.Checked -eq $true})){
+        foreach($mod in $Workspace.Controls.Where{$_.Visible -eq $true -and $_.CheckBox.Checked -eq $true}){
             foreach($dependency in $mod.ModData.Dependencies) { 
                 $dependencies.Add($dependency) | Out-Null }
             foreach($conflict in $mod.ModData.Conflicts) { $conflicts.Add($conflict) | Out-Null }
@@ -405,7 +455,7 @@ function adjustMods(){
                 $minGameversion = [version]$mod.ModData.Gameversion }
         }
         # Check if all of these are satisfied
-        foreach($mod in $Workspace.Controls.Where({$_.Visible -eq $true -and $_.CheckBox.Checked -eq $true})){
+        foreach($mod in $Workspace.Controls.Where{$_.Visible -eq $true -and $_.CheckBox.Checked -eq $true}){
             $dependencies.Remove($mod.ModData.Modname) | Out-Null
             if($mod.ModData.Modname -in $conflicts) { $violations.Add($mod.ModData.Modname) | Out-Null }
         }
@@ -415,7 +465,7 @@ function adjustMods(){
     $dependencies, $violations, $minGameversion = checkMods $Workspace
     while($dependencies.Count -ne 0){
         # Try to enable dependencies
-        foreach($mod in $Workspace.Controls.Where({$_.Visible -eq $true})){
+        foreach($mod in $Workspace.Controls.Where{$_.Visible -eq $true}){
             if($mod.ModData.Modname -in $dependencies){
                 $mod.CheckBox.Checked = $true
                 $dependencies.Remove($mod.ModData.Modname)
@@ -499,7 +549,8 @@ function createCollapsible([ModData]$modData){
         $modCheckbox.AutoCheck = $false
     }
     $modCheckbox.Add_Click({
-        if($this.Content.Installed){ return }
+        $this.Header
+        if($this.Mod.ModData.Installed){ return }
         adjustMods
     })
 
@@ -524,7 +575,7 @@ function createCollapsible([ModData]$modData){
     
     # Prepare Links
     $collapsibleContainer | Add-Member NoteProperty ModData $modData
-    $modCheckbox | Add-Member NoteProperty Content $collapsibleBodyContainer
+    $modCheckbox | Add-Member NoteProperty Mod $collapsibleContainer
     $collapsibleButton | Add-Member NoteProperty Content $collapsibleBodyContainer
     $collapsibleContainer | Add-Member NoteProperty CheckBox $modCheckbox
 
@@ -588,6 +639,7 @@ function displayInfoBox($messageBoxText, $isYesNoPrompt = $false){
     return $messageBoxForm.ShowDialog()
 }
 function selectPage(){
+    # Style Pages
     foreach($sidebarContainer in $Sidebar.Controls){
         foreach($sidebarElements in $sidebarContainer.Controls){
             $sidebarElements.ForeColor = $textcolor
@@ -598,10 +650,25 @@ function selectPage(){
     
     # Prepare Links
     $SidebarMarker | Add-Member NoteProperty -Force Page $this
+
+    # Customize Footer
+    if($this.Parent -eq $GamesContainer){
+        $Footer.Visible = $true
+        $FooterInputFrame.Visible = $true
+        $FooterButton.Text = "Package"
+    } elseif (!$this.GameData) {
+        $Footer.Visible = $false
+    } else {
+        $Footer.Visible = $true
+        $FooterInputFrame.Visible = $false
+        $FooterButton.Text = "Update"
+    }
     
+    # Show mods
     $Workspace.Location = "0,0"
     foreach($mod in $Workspace.Controls){
         if(!$mod.ModData.Installed){ $mod.CheckBox.Checked = $false }
+        # this is always false if the GameData is $null, but that is fine if the Package matches
         $isUpdate = $mod.ModData.GameIdentifier() -eq $this.GameData.GameIdentifier -and $mod.ModData.Package -eq ""
         if($mod.ModData.Package -eq $this.Text -or $isUpdate){
             $mod.Visible = $true
@@ -610,25 +677,18 @@ function selectPage(){
         }
     }
 
-    if($this.Parent -eq $GamesContainer){
-        $Footer.Visible = $true
-        $FooterInputFrame.Visible = $true
-        $FooterButton.Text = "Package"
-    } else {
-        $Footer.Visible = $true
-        $FooterInputFrame.Visible = $false
-        $FooterButton.Text = "Update"
-
-        # Propose updates to installed mods
-        foreach($mod in $Workspace.Controls.Where({$_.ModData.Installed})){
-            foreach($modUpdate in $Workspace.Controls.Where({
-                $_.ModData.Modname -eq $mod.ModData.Modname -and [version]$_.ModData.Modversion -gt [version]$mod.ModData.Modversion
-            })){
+    # Propose updates to installed mods if the game is available
+    if($this.Parent -eq $GamesContainer -or !$this.GameData) { return }
+    foreach($mod in $Workspace.Controls.Where{$_.ModData.Installed}){
+        foreach($modUpdate in $Workspace.Controls.Where{ $_.ModData.Modname -eq $mod.ModData.Modname -and !$_.ModData.Installed }){
+            if([version]$_.ModData.Modversion -gt [version]$mod.ModData.Modversion){
                 $modUpdate.CheckBox.Checked = $true
+            } else {
+                $modUpdate.Visible = $false
             }
         }
-        adjustMods
     }
+    adjustMods
 }
 function initializeUI(){
     $scrollAction = {
@@ -645,27 +705,24 @@ function initializeUI(){
     }
     $null = [ProcessDPI]::SetProcessDPIAware()
 
-    Add-Type -AssemblyName "System.Windows.Forms"
-    Add-Type -AssemblyName "System.Drawing"
-
     # Create Window
-    $window = New-Object Form
-    $window.Text = "Axiom Verge Mod Packager"
-    $window.ShowIcon = $false
-    $window.StartPosition = "CenterScreen"
-    $window.AutoScaleMode  = "Dpi"
-    $window.ClientSize = "800,600"
-    $window.Font = $NormalFont
-    $window.BackColor = $BackgroundColor
-    $window.ForeColor = $TextColor
+    $Window = New-Object Form
+    $Window.Text = "Axiom Verge Mod Packager"
+    $Window.ShowIcon = $false
+    $Window.StartPosition = "CenterScreen"
+    $Window.AutoScaleMode  = "Dpi"
+    $Window.ClientSize = "800,600"
+    $Window.Font = $NormalFont
+    $Window.BackColor = $BackgroundColor
+    $Window.ForeColor = $TextColor
 
     $sidebarScrollBox = New-object Panel
     $sidebarScrollBox.Dock = "Left"
-    $sidebarScrollBox.Width = 150
+    $sidebarScrollBox.Width = 170
     $sidebarScrollBox.BackColor = $SidebarColor
 
     $Sidebar = New-object Panel
-    $Sidebar.Width = 150
+    $Sidebar.Width = 170
     $Sidebar.AutoSize = $true
     $Sidebar.Add_MouseWheel($scrollAction)
 
@@ -705,12 +762,12 @@ function initializeUI(){
     $SidebarMarker.BackColor = $HighlightColor
     $SidebarMarker.Visible = $false
 
-    $packagesHeader = New-object Label
-    $packagesHeader.Dock = "Top"
-    $packagesHeader.Height = 60
-    $packagesHeader.Font = $HeaderFont
-    $packagesHeader.Text = "Packages"
-    $packagesHeader.TextAlign = "MiddleLeft"
+    $PackagesHeader = New-object Label
+    $PackagesHeader.Dock = "Top"
+    $PackagesHeader.Height = 60
+    $PackagesHeader.Font = $HeaderFont
+    $PackagesHeader.Text = "Packages"
+    $PackagesHeader.TextAlign = "MiddleLeft"
 
     $Sidebar.Controls.Add($SidebarMarker)
     $Sidebar.Controls.Add($PackagesContainer)
@@ -748,18 +805,23 @@ function initializeUI(){
     $sidebarScrollBox.Controls.Add($Sidebar)
     $workspaceScrollBox.Controls.Add($Workspace)
     
-    $window.Controls.Add($workspaceScrollBox)
-    $window.Controls.Add($Footer)
-    $window.Controls.Add($sidebarScrollBox)
+    $Window.Controls.Add($workspaceScrollBox)
+    $Window.Controls.Add($Footer)
+    $Window.Controls.Add($sidebarScrollBox)
     
     loadGames
     loadAvailableMods
     loadInstalledPackages
     
     $GamesContainer.Controls.Add($gamesHeader)
-    $PackagesContainer.Controls.Add($packagesHeader)
+    $PackagesContainer.Controls.Add($PackagesHeader)
 
-    $window.ShowDialog()
+    $Window.ShowDialog()
+}
+function refreshUI(){
+    unloadInstalledPackages
+    loadInstalledPackages
+    $PackagesHeader.SendToBack()
 }
 
 ## MAIN
