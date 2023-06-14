@@ -40,7 +40,8 @@ Install-Module ps2exe
 ```
 Create the executeable from the script:
 ```powershell
-Invoke-ps2exe .\AVModPackager.ps1 .\AVModPackager.exe -noConsole
+$version = git tag --points-at HEAD
+Invoke-ps2exe .\AVModPackager.ps1 .\AVModPackager.exe -noConsole -DPIAware -version $version -credentialGUI
 ```
 
 # Contributions

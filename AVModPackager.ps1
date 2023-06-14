@@ -15,6 +15,7 @@ Add-Type -AssemblyName "System.Windows.Forms"
 Add-Type -AssemblyName "System.Drawing"
 
 ## CONSTANTS
+$ScriptRoot = if (-not $PSScriptRoot) { Split-Path -Parent (Convert-Path ([environment]::GetCommandLineArgs()[0])) } else { $PSScriptRoot }
 $RemoteModRepository = "https://github.com/MaragonMH/AxiomVergeMods.git"
 $HighlightColor = "239,118,118"
 $BackgroundColor = "#242424"
@@ -114,9 +115,6 @@ function initializeRepository($repositoryName, $gamePath, $gameIdentifier, $fork
     $gameExe = Get-Item "$gamePath/AxiomVerge*.exe" | Where-Object { $_.Name -match "^AxiomVerge.?\.exe$" }
     $gameName = $gameExe.Name
     $gameBaseName = $gameExe.BaseName
-    if(Test-Path $repositoryName){ Remove-Item $repositoryName -Recurse -Force }
-    New-Item $repositoryName -ItemType Directory
-    Set-Location $repositoryName
     
     # Clone base repository
     if($forkedRepo){
@@ -203,25 +201,27 @@ function applyMod([ModData]$modData, $repositoryName){
     git config branch.$($modData.Modname).note $modData.Description
 
     # Create the patched commit with version as a tag
-    [Encoding]::Unicode.GetString([Convert]::FromBase64String($modData.Patch)) | Set-Content temp
-    # The application of the diff file should be done with different severity
-    git apply temp --whitespace=nowarn
-    if($LASTEXITCODE -ne 0) {
-        git reset --hard
-        git apply temp -C 1 --recount --reject --ignore-whitespace
+    $modData.History | Sort-Object Modversion | ForEach-Object{
+        [Encoding]::Unicode.GetString([Convert]::FromBase64String($_.Patch)) | Set-Content temp
+        # The application of the diff file should be done with different severity
+        git apply temp --whitespace=nowarn
         if($LASTEXITCODE -ne 0) {
-            displayInfoBox "Error:`n`nThe mod $($modData.Modname) could not be applied. Installation will continue, but without this mod. Contact the mod-creator for help"
             git reset --hard
-            return
-        } else {
-            displayInfoBox "Warning:`n`nThe mod $($modData.Modname) was applied in a degraded state. This may work, but it is advisable to inform the mod-creator about the defect"
+            git apply temp -C 1 --recount --reject --ignore-whitespace
+            if($LASTEXITCODE -ne 0) {
+                displayInfoBox "Error:`n`nThe mod $($_.Modname) could not be applied. Installation will continue, but without this mod. Contact the mod-creator for help"
+                git reset --hard
+                return
+            } else {
+                displayInfoBox "Warning:`n`nThe mod $($_.Modname) was applied in a degraded state. This may work, but it is advisable to inform the mod-creator about the defect"
+            }
         }
+        Remove-Item temp
+        git add -A
+        git commit -m $_.Message
+        git tag "$($_.Modname)-$($_.Modversion)"
     }
-    Remove-Item temp
-    git add -A
-    git commit -m "Generated from Patch"
-    git tag "$($modData.Modname)-$($modData.Modversion)"
-    
+
     # Update mod file
     $modFileHandle = [xml](Get-Content ".avmod")
     $modData.History | Foreach-Object {
@@ -252,6 +252,7 @@ function packageMod(){
         displayInfoBox "Invalid package name. Check that it is not Empty and does not start with AV or match AxiomVergeMods, Saves, Mod."
         return
     }
+
     # Check for duplicates
     if(Test-Path $packageName){
         $result = displayInfoBox "This package already exists. Do you want to overwrite it" $true
@@ -259,7 +260,12 @@ function packageMod(){
         Move-Item "$packageName/Saves" "Saves"
         Remove-Item $packageName -Recurse -Force
     }
+
+    # Prepare the package directory
+    New-Item $packageName -ItemType Directory
+    Set-Location $packageName
     initializeRepository $packageName $SidebarMarker.Page.GameData.GamePath $SidebarMarker.Page.GameData.GameIdentifier
+
     # Make sure to only discard old mods. This only happens for packages and their automatic updates
     $mods = $Workspace.Controls.Where{$_.Visible -eq $true -and $_.CheckBox.Checked -eq $true} | Select-Object -ExpandProperty ModData
     $mods = $mods | Group-Object Modname | ForEach-Object { 
@@ -267,6 +273,7 @@ function packageMod(){
         $recentMod = $_.group | Where-Object { $_.Modversion -eq $maxVersion }
         $recentMod
     }
+
     # Make sure that all mods are installed in the correct order
     if ($null -eq $mods) { $mods = @() }
     if ($mods -isnot [Array]) { $mods = @($mods) }
@@ -317,10 +324,11 @@ function installDependencies(){
         "Microsoft.DotNet.SDK.7"
         "Microsoft.DotNet.Framework.DeveloperPack_4"
         "Microsoft.DotNet.DesktopRuntime.3_1"
+        "AngusJohnson.ResourceHacker"
     ) 
-    $dependencies | Foreach-Object {
-        Start-Job -Arg $_ -ScriptBlock {param($dep) winget list $dep --no-upgrade }
-    } | Wait-Job | Out-Null
+    $dependencies | Foreach-Object { Start-Job -Arg $_ -ScriptBlock {
+        param($dep) winget install $dep --no-upgrade --silent --accept-source-agreements --accept-package-agreements
+    }} | Wait-Job | Out-Null
     
     # Reload Path
     $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
@@ -331,6 +339,7 @@ function installDependencies(){
     # Add to Path
     if(!(Get-Command git -ErrorAction SilentlyContinue)){ $env:Path += ';C:\Program Files\Git\usr\bin' }
     if(!(Get-Command dotnet -ErrorAction SilentlyContinue)){ $env:Path += ';C:\Program Files\dotnet' }
+    if(!(Get-Command ResourceHacker -ErrorAction SilentlyContinue)){ $env:Path += ';C:\Program Files (x86)\Resource Hacker' }
 
     # Install Decompiler
     if(!(Get-Command ilspycmd -ErrorAction SilentlyContinue)){ dotnet tool install --global ilspycmd --version 7.1.0.6543 }
@@ -345,8 +354,29 @@ function installDependencies(){
             git -C "AxiomVergeMods" pull | Out-Null
         }
     } else {
-        git clone $RemoteModRepository "AxiomVergeMods"
+        git clone -q $RemoteModRepository "AxiomVergeMods"
     }
+}
+function loadIcon(){
+    # powershell does not block this command properly
+    cmd /c ResourceHacker -open "AVModPackager.exe"-save "AV-Sources/check.res" -action extract -mask ICONGROUP
+    if(Test-Path "AV-Sources/check.res"){
+        Remove-Item "AV-Sources/*.res"
+        return
+    }
+    Get-Item "AV-Sources/*/AxiomVerge*.exe" | 
+        Where-Object { $_.Name -match "^AxiomVerge.?\.exe$" } | ForEach-Object{ 
+        cmd /c ResourceHacker -open $_.FullName -save "AV-Sources/icon.res" -action extract -mask ICONGROUP}
+    
+    $id = [System.Diagnostics.Process]::GetCurrentProcess().Id
+    $command = { param($id) 
+        Wait-Process -id $id -ErrorAction SilentlyContinue
+        cmd /c ResourceHacker -open AVModPackager.exe -save AVModPackager.exe -action addskip -res AV-Sources/icon.res
+        Remove-Item AV-Sources/icon.res
+        Start-Process AVModPackager.exe
+    }
+    Start-Process powershell -ArgumentList "-WindowStyle Minimized -command & {$command} $id"
+    Exit
 }
 function loadGames(){
     # Locate Steam and Epic AV1 and AV2 to add available Games to sidebar
@@ -358,7 +388,7 @@ function loadGames(){
     }
     foreach ($supportedGame in $supportedGames.Keys.Where{ Test-Path $supportedGames[$_]}) {
         $gameData = [GameData]::new($supportedGame, $supportedGames[$supportedGame])
-        $storagePath = "$PSScriptRoot/AV-Sources/$supportedGame"
+        $storagePath = "$((Get-Location).Path)/AV-Sources/$supportedGame"
         
         # Store currently available Version (Beta/Original) for use when the other is selected
         if($gameData.IsBeta) { $alternateGamePath = "$storagePath-Beta" }
@@ -367,7 +397,7 @@ function loadGames(){
             if($gameData.Gameversion -gt [GameData]::new("", $alternateGamePath).Gameversion) { 
                 Remove-Item $alternateGamePath -Recurse -Force }}
         if(!(Test-Path $alternateGamePath)){
-            Copy-Item $gameData.GamePath $alternateGamePath -Recurse }
+            Copy-Item $gameData.GamePath $alternateGamePath -Recurse -Force }
 
         # Create Games
         $orgGamePath = "$storagePath-Original"
@@ -699,7 +729,7 @@ function initializeUI(){
         $this.Location = [Point]::new(0, $newScroll);
     }
 
-    # Fix dpi issues
+    # Fix dpi issues only for script
     if ("ProcessDPI" -as [type]) {} else {
         Add-Type -TypeDefinition 'using System.Runtime.InteropServices;public class ProcessDPI {[DllImport("user32.dll", SetLastError=true)]public static extern bool SetProcessDPIAware();}'
     }
@@ -810,13 +840,14 @@ function initializeUI(){
     $Window.Controls.Add($sidebarScrollBox)
     
     loadGames
+    loadIcon
     loadAvailableMods
     loadInstalledPackages
     
     $GamesContainer.Controls.Add($gamesHeader)
     $PackagesContainer.Controls.Add($PackagesHeader)
 
-    $Window.ShowDialog()
+    $Window.ShowDialog() | Out-Null
 }
 function refreshUI(){
     unloadInstalledPackages
@@ -825,7 +856,7 @@ function refreshUI(){
 }
 
 ## MAIN
-Push-Location $PSScriptRoot
+Push-Location $ScriptRoot
 installDependencies
 initializeUI
 Pop-Location
