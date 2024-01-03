@@ -840,7 +840,7 @@ function initializeUI(){
     $Window.Controls.Add($sidebarScrollBox)
     
     loadGames
-    loadIcon
+    # Hotfix loadIcon
     loadAvailableMods
     loadInstalledPackages
     
