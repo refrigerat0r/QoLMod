@@ -10,4 +10,6 @@ This is a(n attempt at a) Quality-of-Life mod for Axiom Verge 1.
 Download [Maragon](https://github.com/MaragonMH/)'s release version of [AxiomVergeMods](https://github.com/MaragonMH/AxiomVergeMods/releases/latest) and follow the readme. When selecting your mods, be sure to select QoLMod from the menu, then give it a name, and select "Package."
 
 # Contributions
-If you'd like to add improvements or give feedback to the modding application, please feel free to contact [Maragon](https://github.com/MaragonMH/) in the "Official Axiom Verge" Discord Server, in the #modding channel, so you can make the app even better. 
+If you'd like to make suggestions for the mod, contact refrigerat0r(wolfe) in the Official Axiom Verge Discord server, in the #modding channel.
+
+If you'd like to add improvements or give feedback to the modding application, please feel free to contact Maragon in the "Official Axiom Verge" Discord Server, in the #modding channel, so you can make the app even better. 
